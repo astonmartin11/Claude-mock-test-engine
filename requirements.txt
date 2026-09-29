@@ -1,0 +1,11 @@
+streamlit>=1.40
+psycopg[binary]>=3.2
+pymupdf
+pytesseract
+pillow
+python-pptx
+python-docx
+reportlab
+google-genai
+groq
+pandas
