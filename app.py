@@ -283,6 +283,9 @@ elif pg.startswith("📚"):
         if ok:
             try: extract_topics(sid)
             except Exception as e: st.warning(f"Topic extraction failed (Gemini): {e}")
+    if st.button("Extract topics now"):
+        try: extract_topics(sid); st.success("Topics updated.")
+        except Exception as e: st.error(f"Topic extraction failed: {e}")
     for d in q("SELECT * FROM documents WHERE subject_id=%s ORDER BY id DESC", (sid,)):
         with st.expander(f"{d['filename']} — {d['doc_type']} — {d['file_size']/1048576:.1f} MB — {d['method']} — {d['created_at']:%Y-%m-%d} — {d['status']}"):
             txt = "\n".join(f"--- Page/Slide {p['page_no']} ---\n{p['content']}" for p in q("SELECT page_no,content FROM document_pages WHERE document_id=%s AND subject_id=%s ORDER BY page_no", (d["id"], sid)))
