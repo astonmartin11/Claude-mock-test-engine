@@ -156,7 +156,7 @@ def extract_topics(sid):
     t = ctx(sid, ["Syllabus", "Notes", "Lecture Slides", "Previous Year Question Paper"], 9000)
     if not t: return
     known = [r["name"] for r in q("SELECT name FROM topics WHERE subject_id=%s", (sid,))]
-    o = jparse(gem('List the main examinable topics in this study material as JSON {"topics":["..."]}, 10-30 short names. Existing topics (reuse names, no duplicates): ' + str(known) + "\n\n" + t))
+    o = jparse(reason('List the main examinable topics in this study material as JSON {"topics":["..."]}, 10-30 short names. Existing topics (reuse names, no duplicates): ' + str(known) + "\n\n" + t,True))
     for n in o.get("topics", []):
         if isinstance(n, str) and n.strip(): topic_id(sid, n)
 def mastery(sid): return q("SELECT t.id,t.name,COALESCE(m.attempts,0) attempts,COALESCE(m.score,0) score,COALESCE(m.max_score,0) mx,m.last_attempt FROM topics t LEFT JOIN topic_mastery m ON m.topic_id=t.id WHERE t.subject_id=%s ORDER BY t.name", (sid,))
