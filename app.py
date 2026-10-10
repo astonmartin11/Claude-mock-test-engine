@@ -52,18 +52,42 @@ def norm(s):
     s = s.replace("$", "").replace("^2", "²").replace("^3", "³").replace("{", "(").replace("}", ")")
     s = re.sub(r"\\([A-Za-z]+)", r"\1", s).replace("\\", "")
     return s
+FONT = "Helvetica"
+UM = str.maketrans({"\u2011": "-", "\u2010": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2212": "-", "\u202f": " ", "\u2009": " ", "\u00a0": " ", "\u200b": "", "\u2060": ""})
+def _font():  # Unicode font so Greek letters, subscripts, superscripts and symbols print correctly
+    global FONT
+    from reportlab.pdfbase import pdfmetrics; from reportlab.pdfbase.ttfonts import TTFont
+    for base in ("/usr/share/fonts/truetype/dejavu/", "/usr/share/fonts/dejavu/", ""):
+        try:
+            pdfmetrics.registerFont(TTFont("DejaVu", base + "DejaVuSans.ttf")); pdfmetrics.registerFont(TTFont("DejaVu-Bold", base + "DejaVuSans-Bold.ttf"))
+            pdfmetrics.registerFontFamily("DejaVu", normal="DejaVu", bold="DejaVu-Bold", italic="DejaVu", boldItalic="DejaVu-Bold"); FONT = "DejaVu"; return
+        except Exception: continue
 def pdf_safe(s):
+    s = norm(s).translate(UM)
+    if FONT == "DejaVu": return s
     out = ""
-    for ch in norm(s):
+    for ch in s:
         if ord(ch) < 256: out += ch
-        elif ch in "→⇒": out += "->"
-        elif ch == "≤": out += "<="
-        elif ch == "≥": out += ">="
-        elif ch == "≈": out += "~"
         else:
-            try: out += unicodedata.name(ch).split()[-1].lower() if "GREEK" in unicodedata.name(ch) else "?"
-            except ValueError: out += "?"
+            n = unicodedata.normalize("NFKD", ch)
+            if n.isascii(): out += n
+            elif ch in "→⇒": out += "->"
+            elif ch == "≤": out += "<="
+            elif ch == "≥": out += ">="
+            elif ch == "≈": out += "~"
+            else:
+                try: out += unicodedata.name(ch).split()[-1].lower() if "GREEK" in unicodedata.name(ch) else "?"
+                except ValueError: out += "?"
     return out
+MAT = re.compile(r"\[\s*\[[^\[\]]*\](?:\s*,\s*\[[^\[\]]*\])+\s*\]")
+def split_matrices(txt):  # inline [[1,2],[3,4]] -> drawn matrix below the question
+    ms = []
+    def f(m):
+        rows = [[v.strip() for v in r.split(",")] for r in re.findall(r"\[([^\[\]]*)\]", m.group(0))]
+        if len({len(r) for r in rows}) != 1 or len(rows) > 8 or len(rows[0]) > 8: return m.group(0)
+        pre = re.search(r"([A-Za-z]\w*)\s*=\s*(?:\([^()]*\)\s*\*?\s*)?$", txt[:m.start()])
+        ms.append({"kind": "matrix", "rows": rows, "label": pre.group(1) if pre else f"M{len(ms) + 1}"}); return "(matrix shown below)"
+    return MAT.sub(f, txt), ms
 def clean_pages(pages):
     cnt = {}
     for p in pages:
@@ -170,20 +194,24 @@ def pct(r): return 100 * r["score"] / r["mx"] if r["mx"] else None
 def grey(sid, n=5): return [r["name"] for r in sorted([r for r in mastery(sid) if pct(r) is not None and pct(r) < 60], key=pct)][:n]
 
 # ---------- mock test ----------
-FIGS = 'Optional "figure" (null unless a diagram truly helps): {"kind":"neural_net","layers":[3,4,2]} | {"kind":"matrix","rows":[[1,2],[3,4]],"label":"A"} | {"kind":"blocks","boxes":["Input","Conv","ReLU"]} | {"kind":"plot","x":[0,1,2],"y":[0,1,4],"xlabel":"","ylabel":""} | {"kind":"polar","values":[1,3,1,0.5,2,0.5],"label":"RCS pattern"}'
+FIGS = 'Optional "figure" (null unless a diagram helps; REQUIRED when the question refers to a network, image pixel values, an architecture or a geometry): {"kind":"neural_net","layers":[2,2,1],"inputs":["x1","x2"],"outputs":["y"],"edge_labels":true} | {"kind":"grids","grids":[{"label":"Image at k","rows":[[10,20],[40,0]]},{"label":"Image at k+1","rows":[[10,30],[40,50]]}]} | {"kind":"cnn","layers":[{"label":"Conv 7x7x64 s2","dim":"448x448x3","does":"detects edges"},{"label":"Maxpool 2x2","dim":"112x112x64","does":"downsamples"}]} | {"kind":"radar_geom","v":"v"} | {"kind":"matrix","rows":[[1,2],[3,4]],"label":"A"} | {"kind":"blocks","boxes":["Input","Conv","ReLU"]} | {"kind":"plot","x":[0,1,2],"y":[0,1,4],"xlabel":"","ylabel":""} | {"kind":"polar","values":[1,3,1,0.5,2,0.5],"label":"RCS pattern"}'
 def fig_draw(sp):
     from reportlab.graphics.shapes import Drawing, Circle, Line, String, Rect, PolyLine, Polygon
     from reportlab.lib import colors
-    k = sp["kind"]; W, H = 380, 170; d = Drawing(W, H); T = lambda x, y, t, **a: d.add(String(x, y, pdf_safe(str(t)), fontSize=a.pop("fs", 9), **a))
+    k = sp["kind"]; W = 380; H = 30 + 24 * min(len(sp["rows"]), 8) if k == "matrix" else 14 + 22 * min(len(sp["layers"]), 10) if k == "cnn" else 190; d = Drawing(W, H); T = lambda x, y, t, **a: d.add(String(x, y, pdf_safe(str(t)), fontSize=a.pop("fs", 9), fontName=FONT, **a))
     if k == "neural_net":
-        L = [min(int(x), 6) for x in sp["layers"]][:6]; xs = [40 + i * (W - 80) / max(len(L) - 1, 1) for i in range(len(L))]
-        P = [[(xs[i], H / 2 + (j - (m - 1) / 2) * 28) for j in range(m)] for i, m in enumerate(L)]
-        for a, b in zip(P, P[1:]):
-            for p in a:
-                for r in b: d.add(Line(p[0], p[1], r[0], r[1], strokeColor=colors.grey, strokeWidth=.5))
+        L = [min(int(x), 6) for x in sp["layers"]][:6]; xs = [60 + i * (W - 120) / max(len(L) - 1, 1) for i in range(len(L))]
+        P = [[(xs[i], H / 2 + (j - (m - 1) / 2) * 40) for j in range(m)] for i, m in enumerate(L)]
+        for li, (a, b) in enumerate(zip(P, P[1:]), 1):
+            for ai, p in enumerate(a, 1):
+                for bi, r in enumerate(b, 1):
+                    d.add(Line(p[0], p[1], r[0], r[1], strokeColor=colors.grey, strokeWidth=.6))
+                    if sp.get("edge_labels"): T(p[0] + (r[0] - p[0]) * .3, p[1] + (r[1] - p[1]) * .3 + 2, f"w{li}[{bi},{ai}]", fs=6)
         for i, l in enumerate(P):
-            for p in l: d.add(Circle(p[0], p[1], 8, fillColor=colors.white, strokeColor=colors.black))
+            for p in l: d.add(Circle(p[0], p[1], 9, fillColor=colors.white, strokeColor=colors.black))
             T(xs[i], 6, "Input" if i == 0 else "Output" if i == len(P) - 1 else "Hidden", textAnchor="middle", fs=8)
+        for p, nm in zip(P[0], sp.get("inputs", [])): T(p[0] - 14, p[1] - 3, nm, textAnchor="end")
+        for p, nm in zip(P[-1], sp.get("outputs", [])): T(p[0] + 14, p[1] - 3, nm)
     elif k == "matrix":
         R = [[str(v) for v in r][:8] for r in sp["rows"][:8]]; cw, ch = 42, 22; w = cw * len(R[0]); x0 = (W - w) / 2; y0 = H / 2 + ch * len(R) / 2
         for i, r in enumerate(R):
@@ -209,12 +237,36 @@ def fig_draw(sp):
         for r in (R / 3, 2 * R / 3, R): d.add(Circle(cx, cy, r, fillColor=None, strokeColor=colors.lightgrey))
         d.add(Polygon([c for i, v in enumerate(V) for c in (cx + R * v / m * math.cos(2 * math.pi * i / len(V)), cy + R * v / m * math.sin(2 * math.pi * i / len(V)))], fillColor=None, strokeColor=colors.red))
         T(cx, 4, sp.get("label", ""), textAnchor="middle")
+    elif k == "grids":
+        x = 20
+        for g in sp["grids"][:3]:
+            R = [[str(v) for v in r][:4] for r in g["rows"][:4]]; cw = 34
+            for i, r in enumerate(R):
+                for j, v in enumerate(r):
+                    y = H - 55 - (i + 1) * 24; d.add(Rect(x + j * cw, y, cw, 24, fillColor=None, strokeColor=colors.black)); T(x + j * cw + cw / 2, y + 8, v, textAnchor="middle")
+            T(x + cw * len(R[0]) / 2, H - 35, g.get("label", ""), textAnchor="middle"); x += cw * len(R[0]) + 30
+    elif k == "radar_geom":
+        d.add(Circle(40, 30, 10, fillColor=colors.white, strokeColor=colors.black)); T(40, 8, "Radar", textAnchor="middle")
+        d.add(Line(40, 30, 280, 120)); T(130, 88, "Range R"); d.add(Rect(272, 118, 26, 12, fillColor=colors.whitesmoke, strokeColor=colors.black)); T(285, 135, "Moving target", textAnchor="middle", fs=8)
+        d.add(Line(285, 124, 345, 124, strokeColor=colors.blue)); T(330, 129, sp.get("v", "v")); T(235, 103, "theta")
+    elif k == "cnn":
+        for i, l in enumerate(sp["layers"][:10]):
+            l = l if isinstance(l, dict) else {"label": l}; y = H - 22 * (i + 1) - 4; bw = max(30, 90 - i * 8)
+            d.add(Rect(10, y, bw, 16, fillColor=colors.whitesmoke, strokeColor=colors.black)); T(14, y + 5, str(l.get("dim", ""))[:14], fs=7)
+            T(110, y + 5, (str(l.get("label", "")) + (" : " + str(l["does"]) if l.get("does") else ""))[:62], fs=8)
     else: raise ValueError("unknown figure")
     return d
 QT = ["mcq", "theory", "numerical", "derivation", "case_study"]
 def qtype(s):
     s = str(s).lower()
     return "mcq" if ("mcq" in s or "multiple" in s) else "case_study" if "case" in s else "derivation" if "deriv" in s else "numerical" if "numer" in s else "theory"
+def fill_figs(gs):  # second pass: draw a figure for network / CNN / image / geometry questions that came without one
+    try:
+        o = jparse(reason("For each exam question write a figure spec that shows exactly what the question describes using ITS OWN numbers (layers, weights, pixel values, architecture stages with per-layer dimensions and what each layer does), or null if no diagram helps. " + FIGS + '\nReturn JSON {"figures":[spec_or_null,...]} with exactly ' + str(len(gs)) + " entries, in order.\n" + json.dumps([g["text"] for g in gs]), True))["figures"]
+        for g, f in zip(gs, o):
+            try: fig_draw(f); g["figure"] = json.dumps(f)
+            except Exception: pass
+    except Exception as e: log.error(e)
 def gen_test(sid, n, diff, topics, pyq, use_grey, plan=None, instr="", prog=lambda m: None):
     ms = mastery(sid); names = topics or [r["name"] for r in ms]; weak = grey(sid) if use_grey else []
     prof = "; ".join(f"{r['name']} ({'untested' if pct(r) is None else str(round(pct(r)))+'% mastery'})" for r in ms if r["name"] in names)
@@ -237,16 +289,17 @@ def gen_test(sid, n, diff, topics, pyq, use_grey, plan=None, instr="", prog=lamb
         o = reason("Generate engineering examination questions using the supplied syllabus, notes, slides and PYQs as the primary source. Do not invent unsupported topics. Prefer the terminology of the material. Use plain engineering notation; NEVER output LaTeX (\\frac, \\sqrt, \\sum, \\begin). Use forms like 10 / [s(s+2)], sqrt(x² + y²).\n"
                    + spec + f"Difficulty: {diff}. Allowed topics: {names}. Topic profile: {prof}. " + (f"Weak topics needing MORE questions: {weak}. " if weak else "")
                    + ("Numericals should follow the topics/subtopics seen in the PYQs. Ask questions similar or related to the PYQs (same style, new numbers/wording), never copies. " if pyq else "")
-                   + "MCQs: put the 4 options (A)-(D) on separate lines inside the question text. Case studies: a short scenario then sub-parts with marks. Numerical data must be self-consistent; solve each numerical yourself before writing expected_answer. "
+                   + "Write like a real university minor paper: multi-part questions (a)(b)(c) where natural; Show that / Determine / Compute / Prove / Explain; numericals with concrete given values (matrices, weights, frequencies); say 'as shown in the figure' when you add a figure. Descriptive questions 2-6 marks. MCQs: 1 mark, 'which statement is correct / NOT' style, put the 4 options (A)-(D) on separate lines inside the question text. Case studies: a short scenario then sub-parts with marks. Numerical data must be self-consistent; solve each numerical yourself before writing expected_answer. "
                    + ("MANDATORY USER CONSTRAINTS (follow strictly): " + instr + " " if instr.strip() else "") + "Already created (avoid): " + str([g['text'][:50] for g in good]) + "\n"
                    + 'Return JSON only: {"questions":[{"question":"","marks":5,"difficulty":"easy|medium|hard","topic":"","question_type":"","expected_answer":"","figure":null}]}. ' + FIGS + "\n\n" + src + "\n\nPYQs:\n" + p_, True, "medium")
         try: items = jparse(o)["questions"]
         except Exception as e: log.error(e); continue
-        left = dict(need_t) if need_t else None
+        left = dict(need_t) if need_t else None; b0 = len(good)
         for it in items:
             try:
                 t = norm(it["question"]).strip(); mk = int(it["marks"]); tp = str(it["topic"]).strip(); qt = qtype(it.get("question_type"))
                 m_ = next((x for x in names if x.lower() == tp.lower()), None)
+                mk = 1 if qt == "mcq" else mk
                 if len(t) < 15 or mk <= 0 or (names and not m_) or (left is not None and left.get(qt, 0) <= 0): continue
                 k = re.sub(r"\W", "", t.lower())[:80]
                 if k in seen: continue
@@ -257,6 +310,8 @@ def gen_test(sid, n, diff, topics, pyq, use_grey, plan=None, instr="", prog=lamb
                 if left is not None: left[qt] -= 1; need_t[qt] -= 1
                 if len(good) >= n: break
             except Exception: continue
+        nf = [g for g in good[b0:] if not g["figure"] and re.search(r"neural network|backprop|hidden layer|\bCNN|convolution|YOLO|R-CNN|feature map|architecture|optical flow|pixel|geometry|slant range", g["text"], re.I)]
+        if nf: prog("Drawing figures…"); fill_figs(nf)
     if len(good) < n: raise RuntimeError(f"Only {len(good)} of {n} valid questions could be generated. Try again in a few minutes.")
     if plan: good.sort(key=lambda g: QT.index(g["qtype"]))
     prog("Saving test…"); sname = q("SELECT name FROM subjects WHERE id=%s", (sid,), one=True)["name"]
@@ -278,23 +333,28 @@ def apply_plan():
     st.session_state.update(g_mode="Custom blueprint", g_num=c["numerical"], g_der=c["derivation"], g_mcq=c["mcq"], g_case=c["case_study"], g_theory=c["theory"], g_instr=p["instr"], g_diff=p["diff"] if p["diff"] in ("Mixed", "Easy", "Medium", "Hard") else "Mixed")
 
 def make_pdf(tid, key=False):
-    from reportlab.lib.pagesizes import A4; from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer; from xml.sax.saxutils import escape
+    from reportlab.lib.pagesizes import A4; from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, KeepTogether; from xml.sax.saxutils import escape
     t = q("SELECT t.*,s.name sname FROM tests t JOIN subjects s ON s.id=t.subject_id WHERE t.id=%s", (tid,), one=True)
     qs = q("SELECT * FROM questions WHERE test_id=%s ORDER BY num", (tid,)); tot = sum(x["marks"] for x in qs)
     P = lambda s: escape(pdf_safe(s)).replace("\n", "<br/>")
-    ss = getSampleStyleSheet(); b = io.BytesIO(); d = SimpleDocTemplate(b, pagesize=A4, leftMargin=50, rightMargin=50, topMargin=50, bottomMargin=50)
-    el = [Paragraph("ANSWER KEY" if key else "ADAPTIVE MOCK TEST", ss["Title"]),
-          Paragraph(P(f"Subject: {t['sname']}\nDuration: {round(tot * 1.2)} Minutes\nMaximum Marks: {tot}"), ss["Normal"]), Spacer(1, 8)]
-    if not key: el += [Paragraph("<b>Instructions:</b><br/>1. Attempt all questions.<br/>2. Show necessary steps for numerical problems.<br/>3. Assume suitable values where required.", ss["Normal"])]
-    el.append(Spacer(1, 12))
-    for x in qs:
-        el.append(Paragraph(P(f"Q{x['num']}. {x['text']} [{x['marks']}]"), ss["Normal"])); el.append(Spacer(1, 4))
-        if x.get("figure"):
-            try: el.append(fig_draw(json.loads(x["figure"])))
-            except Exception as e: log.error(e)
-        if key: el.append(Paragraph("<i>" + P("Answer: " + (x["solution"] or "-")) + "</i>", ss["Normal"]))
-        el.append(Spacer(1, 10))
+    ss = getSampleStyleSheet(); _font(); N = ss["Normal"]; N.leading = 14; N.fontName = FONT; BF = "DejaVu-Bold" if FONT == "DejaVu" else "Helvetica-Bold"; PS = lambda n, **k: ParagraphStyle(n, parent=k.pop("p", N), **k)
+    b = io.BytesIO(); d = SimpleDocTemplate(b, pagesize=A4, leftMargin=50, rightMargin=50, topMargin=45, bottomMargin=45)
+    el = [Paragraph(P(("ANSWER KEY: " if key else "") + f"Mock Test: {t['sname']}"), PS("t", p=ss["Title"], fontSize=16, fontName=BF)),
+          Paragraph(P(f"Duration: {max(1, round(tot * 1.2 / 30) / 2):g} Hrs     Maximum Marks: {tot}"), PS("d", p=ss["Heading3"], alignment=1, fontName=BF)), Spacer(1, 6)]
+    if not key: el += [Paragraph("<b>Important Directions</b>", N), Paragraph("1. Attempt all questions.<br/>2. Any missing information that is necessary to answering the questions may be assumed and stated at the beginning of the answer itself.", N), Spacer(1, 6), Paragraph("<b>Questions</b>", N)]
+    fig = 0
+    for title, sub, grp in (("Part I", "Descriptive and numerical questions", [x for x in qs if x.get("qtype") != "mcq"]), ("Part II", "Choose the correct option: only one option is correct.", [x for x in qs if x.get("qtype") == "mcq"])):
+        if not grp: continue
+        el += [Paragraph(title, PS("c", p=ss["Heading3"], alignment=1, fontSize=13, spaceBefore=10, fontName=BF)), Paragraph(f"<b>{P(sub)}</b>", PS("s", alignment=1)), Spacer(1, 8)]
+        for i, x in enumerate(grp, 1):
+            txt, mats = split_matrices(x["text"]); fl = [fig_draw(m) for m in mats]
+            if x.get("figure"):
+                try: g = fig_draw(json.loads(x["figure"])); fig += 1; txt += f" (Refer to Figure {fig}.)"; fl += [g, Paragraph(f"Figure {fig}", PS("f", alignment=1))]
+                except Exception as e: log.error(e)
+            blk_ = [Paragraph(f"{i}. {P(txt)} <b>[{x['marks']} mark{'s' if x['marks'] != 1 else ''}]</b>", N)] + fl
+            if key: blk_.append(Paragraph("<i>" + P("Answer: " + (x["solution"] or "-")) + "</i>", N))
+            el += [KeepTogether(blk_), Spacer(1, 10)]
     d.build(el); data = b.getvalue()
     txt = "".join(p.get_text() for p in fitz.open(stream=data, filetype="pdf"))  # verification
     if not txt.strip() or re.search(r"\\(frac|sqrt|begin|end|sum|int)\b", txt): raise RuntimeError("PDF verification failed.")
@@ -431,6 +491,9 @@ elif pg.startswith("✍️"):
     for tab, x in zip(st.tabs([f"Q{x['num']}" for x in qs]), qs):
         with tab:
             st.write(f"**Q{x['num']}.** {x['text']}  **[{x['marks']}]**")
+            if x.get("figure"):
+                try: from reportlab.graphics import renderSVG; st.image(renderSVG.drawToString(fig_draw(json.loads(x["figure"]))))
+                except Exception as e: log.error(e)
             tx = st.text_area("Typed answer", key=f"a{t['id']}_{x['id']}", height=150)
             up = st.file_uploader("…or handwritten answer (PNG/JPG/PDF)", type=["png", "jpg", "jpeg", "pdf"], key=f"u{t['id']}_{x['id']}")
             ans[x["id"]] = (tx, up)
