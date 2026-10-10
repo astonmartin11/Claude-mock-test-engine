@@ -289,7 +289,7 @@ def gen_test(sid, n, diff, topics, pyq, use_grey, plan=None, instr="", prog=lamb
         o = reason("Generate engineering examination questions using the supplied syllabus, notes, slides and PYQs as the primary source. Do not invent unsupported topics. Prefer the terminology of the material. Use plain engineering notation; NEVER output LaTeX (\\frac, \\sqrt, \\sum, \\begin). Use forms like 10 / [s(s+2)], sqrt(x² + y²).\n"
                    + spec + f"Difficulty: {diff}. Allowed topics: {names}. Topic profile: {prof}. " + (f"Weak topics needing MORE questions: {weak}. " if weak else "")
                    + ("Numericals should follow the topics/subtopics seen in the PYQs. Ask questions similar or related to the PYQs (same style, new numbers/wording), never copies. " if pyq else "")
-                   + "Write like a real university minor paper: multi-part questions (a)(b)(c) where natural; Show that / Determine / Compute / Prove / Explain; numericals with concrete given values (matrices, weights, frequencies); say 'as shown in the figure' when you add a figure. Descriptive questions 2-6 marks. MCQs: 1 mark, 'which statement is correct / NOT' style, put the 4 options (A)-(D) on separate lines inside the question text. Case studies: a short scenario then sub-parts with marks. Numerical data must be self-consistent; solve each numerical yourself before writing expected_answer. "
+                   + "Format each question like a clean printed exam paper: a short stem of 1-2 sentences on the first line; the given data as short separate lines; sub-parts (a), (b), (c) each on its OWN line (use line breaks) with at most 3 sub-parts and their own marks in brackets; ONE topic per question; never put numbered lists like '1.' inside a question; no filler such as 'give answers as decimal fractions'. Write like a real university minor paper: multi-part questions (a)(b)(c) where natural; Show that / Determine / Compute / Prove / Explain; numericals with concrete given values (matrices, weights, frequencies); say 'as shown in the figure' when you add a figure. Descriptive questions 2-6 marks. MCQs: 1 mark, 'which statement is correct / NOT' style, put the 4 options (A)-(D) on separate lines inside the question text. Case studies: a short scenario then sub-parts with marks. Numerical data must be self-consistent; solve each numerical yourself before writing expected_answer. "
                    + ("MANDATORY USER CONSTRAINTS (follow strictly): " + instr + " " if instr.strip() else "") + "Already created (avoid): " + str([g['text'][:50] for g in good]) + "\n"
                    + 'Return JSON only: {"questions":[{"question":"","marks":5,"difficulty":"easy|medium|hard","topic":"","question_type":"","expected_answer":"","figure":null}]}. ' + FIGS + "\n\n" + src + "\n\nPYQs:\n" + p_, True, "medium")
         try: items = jparse(o)["questions"]
@@ -310,7 +310,7 @@ def gen_test(sid, n, diff, topics, pyq, use_grey, plan=None, instr="", prog=lamb
                 if left is not None: left[qt] -= 1; need_t[qt] -= 1
                 if len(good) >= n: break
             except Exception: continue
-        nf = [g for g in good[b0:] if not g["figure"] and re.search(r"neural network|backprop|hidden layer|\bCNN|convolution|YOLO|R-CNN|feature map|architecture|optical flow|pixel|geometry|slant range", g["text"], re.I)]
+        nf = [g for g in good[b0:] if not g["figure"] and re.search(r"neural network|feed-?forward|neuron|\\bnetwork\\b|ReLU|backprop|hidden layer|\bCNN|convolution|YOLO|R-CNN|feature map|architecture|optical flow|pixel|geometry|slant range", g["text"], re.I)]
         if nf: prog("Drawing figures…"); fill_figs(nf)
     if len(good) < n: raise RuntimeError(f"Only {len(good)} of {n} valid questions could be generated. Try again in a few minutes.")
     if plan: good.sort(key=lambda g: QT.index(g["qtype"]))
@@ -334,7 +334,7 @@ def apply_plan():
 
 def make_pdf(tid, key=False):
     from reportlab.lib.pagesizes import A4; from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, KeepTogether; from xml.sax.saxutils import escape
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, KeepTogether, Table; from xml.sax.saxutils import escape
     t = q("SELECT t.*,s.name sname FROM tests t JOIN subjects s ON s.id=t.subject_id WHERE t.id=%s", (tid,), one=True)
     qs = q("SELECT * FROM questions WHERE test_id=%s ORDER BY num", (tid,)); tot = sum(x["marks"] for x in qs)
     P = lambda s: escape(pdf_safe(s)).replace("\n", "<br/>")
@@ -352,9 +352,12 @@ def make_pdf(tid, key=False):
             if x.get("figure"):
                 try: g = fig_draw(json.loads(x["figure"])); fig += 1; txt += f" (Refer to Figure {fig}.)"; fl += [g, Paragraph(f"Figure {fig}", PS("f", alignment=1))]
                 except Exception as e: log.error(e)
-            blk_ = [Paragraph(f"{i}. {P(txt)} <b>[{x['marks']} mark{'s' if x['marks'] != 1 else ''}]</b>", N)] + fl
+            lines = [l.strip() for l in re.sub(r"(?<=[.:?;])\s+(\([a-hA-D]\)|\((?:ii|iii|iv|i|v)\))\s", r"\n\1 ", txt).split("\n") if l.strip()]
+            mk = f"[{x['marks']}&nbsp;mark{'s' if x['marks'] != 1 else ''}]"
+            head = Table([[Paragraph(f"<b>{i}.</b> {P(lines[0])}", N), Paragraph(f"<b>{mk}</b>", PS("m", alignment=2))]], colWidths=[425, 70], style=[("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)])
+            blk_ = [head] + [Paragraph(P(l), PS("i", leftIndent=20, spaceBefore=4)) for l in lines[1:]] + fl
             if key: blk_.append(Paragraph("<i>" + P("Answer: " + (x["solution"] or "-")) + "</i>", N))
-            el += [KeepTogether(blk_), Spacer(1, 10)]
+            el += [KeepTogether(blk_), Spacer(1, 16)]
     d.build(el); data = b.getvalue()
     txt = "".join(p.get_text() for p in fitz.open(stream=data, filetype="pdf"))  # verification
     if not txt.strip() or re.search(r"\\(frac|sqrt|begin|end|sum|int)\b", txt): raise RuntimeError("PDF verification failed.")
